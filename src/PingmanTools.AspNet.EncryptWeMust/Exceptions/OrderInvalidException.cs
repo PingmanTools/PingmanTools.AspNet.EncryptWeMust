@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Runtime.Serialization;
 
 namespace PingmanTools.AspNet.EncryptWeMust.Exceptions
 {
@@ -14,10 +13,6 @@ namespace PingmanTools.AspNet.EncryptWeMust.Exceptions
 		}
 
 		public OrderInvalidException(string message, Exception innerException) : base(message, innerException)
-		{
-		}
-
-		protected OrderInvalidException(SerializationInfo info, StreamingContext context) : base(info, context)
 		{
 		}
 	}

@@ -74,8 +74,6 @@ namespace PingmanTools.AspNet.EncryptWeMust.Certificates
 
                 await _persistenceService.PersistSiteCertificateAsync(new LetsEncryptX509Certificate(pfxCertificateBytes.Bytes));
 
-                const string password = nameof(EncryptWeMust);
-				
                 return new LetsEncryptX509Certificate(pfxCertificateBytes.Bytes);
             }
             finally

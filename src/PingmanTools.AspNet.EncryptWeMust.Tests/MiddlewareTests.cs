@@ -5,12 +5,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using Certes;
 using Certes.Acme;
-using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using NSubstitute;
@@ -25,9 +25,9 @@ namespace PingmanTools.AspNet.EncryptWeMust.Tests
     {
         private static readonly string AcmeToken = Guid.NewGuid().ToString();
         private static readonly  string AcmeResponse = $"{Guid.NewGuid()}-{Guid.NewGuid()}";
-        
+
         private FakeLetsEncryptClient _fakeClient;
-        private IWebHostBuilder _webHostBuilder;
+        private IHostBuilder _hostBuilder;
 
         [TestInitialize]
         public void Setup()
@@ -35,55 +35,58 @@ namespace PingmanTools.AspNet.EncryptWeMust.Tests
             _fakeClient = new FakeLetsEncryptClient();
             var letsEncryptClientFactory = Substitute.For<ILetsEncryptClientFactory>();
             letsEncryptClientFactory.GetClient().Returns(Task.FromResult((ILetsEncryptClient)_fakeClient));
-            
-            _webHostBuilder = WebHost.CreateDefaultBuilder()
-                .ConfigureServices(services =>
+
+            _hostBuilder = new HostBuilder()
+                .ConfigureWebHost(webBuilder =>
                 {
-                    services.AddLetsEncrypt(new LetsEncryptOptions()
+                    webBuilder.UseTestServer();
+                    webBuilder.ConfigureServices(services =>
                     {
-                        Email = "some-email@github.com",
-                        UseStaging = true,
-                        Domains = new[] {"test.com"},
-                        TimeUntilExpiryBeforeRenewal = TimeSpan.FromDays(30),
-                        CertificateSigningRequest = new CsrInfo
+                        services.AddLetsEncrypt(new LetsEncryptOptions()
                         {
-                            CountryName = "CountryNameStuff",
-                            Locality = "LocalityStuff",
-                            Organization = "OrganizationStuff",
-                            OrganizationUnit = "OrganizationUnitStuff",
-                            State = "StateStuff"
-                        }
+                            Email = "some-email@github.com",
+                            UseStaging = true,
+                            Domains = new[] {"test.com"},
+                            TimeUntilExpiryBeforeRenewal = TimeSpan.FromDays(30),
+                            CertificateSigningRequest = new CsrInfo
+                            {
+                                CountryName = "CountryNameStuff",
+                                Locality = "LocalityStuff",
+                                Organization = "OrganizationStuff",
+                                OrganizationUnit = "OrganizationUnitStuff",
+                                State = "StateStuff"
+                            }
+                        });
+
+                        services.AddLetsEncryptMemoryCertficatesPersistence();
+                        services.AddLetsEncryptMemoryChallengePersistence();
+
+                        // mock communication with LetsEncrypt
+                        services.Remove(services.Single(x => x.ServiceType == typeof(ILetsEncryptClientFactory)));
+                        services.AddSingleton<ILetsEncryptClientFactory>(letsEncryptClientFactory);
                     });
-
-                    services.AddLetsEncryptMemoryCertficatesPersistence();
-                    services.AddLetsEncryptMemoryChallengePersistence();
-
-                    // mock communication with LetsEncrypt
-                    services.Remove(services.Single(x => x.ServiceType == typeof(ILetsEncryptClientFactory)));
-                    services.AddSingleton<ILetsEncryptClientFactory>(letsEncryptClientFactory);
-                })
-                .Configure(app =>
-                {
-                    app.UseDeveloperExceptionPage();
-                    
-                    app.UseLetsEncrypt();
-                    
-                    app.Run(async context =>
+                    webBuilder.Configure(app =>
                     {
-                        context.Response.StatusCode = 404;
-                        await context.Response.WriteAsync("Not found");
+                        app.UseDeveloperExceptionPage();
+
+                        app.UseLetsEncrypt();
+
+                        app.Run(async context =>
+                        {
+                            context.Response.StatusCode = 404;
+                            await context.Response.WriteAsync("Not found");
+                        });
                     });
                 })
-                .UseKestrel()
-                .ConfigureLogging(l => l.AddConsole(x => x.IncludeScopes = true));
+                .ConfigureLogging(l => l.AddConsole());
         }
 
         [TestMethod]
         public async Task FullFlow()
         {
-            using var server = new TestServer(_webHostBuilder);
-            var client = server.CreateClient();
-            
+            using var host = await _hostBuilder.StartAsync();
+            var client = host.GetTestClient();
+
             var initialziationTimeout = await Task.WhenAny(Task.Delay(10000, _fakeClient.OrderPlacedCts.Token));
             Assert.IsTrue(initialziationTimeout.IsCanceled, "Fake LE client initialization timed out");
 
@@ -95,16 +98,21 @@ namespace PingmanTools.AspNet.EncryptWeMust.Tests
             var finalizationTimeout = await Task.WhenAny(Task.Delay(10000, _fakeClient.OrderFinalizedCts.Token));
             Assert.IsTrue(finalizationTimeout.IsCanceled, "Fake LE client finalization timed out");
 
+            // Wait for the renewal service to finish setting Certificate after finalization
+            for (var i = 0; i < 50 && LetsEncryptRenewalService.Certificate == null; i++)
+                await Task.Delay(100);
+
+            Assert.IsNotNull(LetsEncryptRenewalService.Certificate, "Certificate was not set after finalization");
             var appCert = ((LetsEncryptX509Certificate)LetsEncryptRenewalService.Certificate).RawData;
             var fakeCert = FakeLetsEncryptClient.FakeCert.RawData;
-            
+
             Assert.IsTrue(appCert.SequenceEqual(fakeCert), "Certificates do not match");
         }
-        
+
         private class FakeLetsEncryptClient : ILetsEncryptClient
         {
             public static readonly LetsEncryptX509Certificate FakeCert = SelfSignedCertificate.Make(DateTime.Now, DateTime.Now.AddDays(90));
-            
+
             public CancellationTokenSource OrderPlacedCts { get; }
             public CancellationTokenSource OrderFinalizedCts { get; }
 
@@ -123,7 +131,7 @@ namespace PingmanTools.AspNet.EncryptWeMust.Tests
                 }};
 
                 OrderPlacedCts.CancelAfter(250);
-            
+
                 return new PlacedOrder(
                     challengeDtos,
                     Substitute.For<IOrderContext>(),
@@ -133,9 +141,9 @@ namespace PingmanTools.AspNet.EncryptWeMust.Tests
             public async Task<PfxCertificate> FinalizeOrder(PlacedOrder placedOrder)
             {
                 await Task.Delay(500);
-                
+
                 OrderFinalizedCts.CancelAfter(250);
-                
+
                 return new PfxCertificate(FakeCert.RawData);
             }
         }

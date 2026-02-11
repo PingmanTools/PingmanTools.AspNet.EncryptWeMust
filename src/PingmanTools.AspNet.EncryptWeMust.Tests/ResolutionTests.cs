@@ -1,8 +1,8 @@
 using System;
 using Certes;
-using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using PingmanTools.AspNet.EncryptWeMust.Certes;
@@ -15,7 +15,11 @@ namespace PingmanTools.AspNet.EncryptWeMust.Tests
         [TestMethod]
         public void Go()
         {
-            var thing = WebHost.CreateDefaultBuilder()
+            var thing = Host.CreateDefaultBuilder()
+                .ConfigureWebHostDefaults(webBuilder =>
+                {
+                    webBuilder.Configure(appBuilder => { appBuilder.UseLetsEncrypt(); });
+                })
                 .ConfigureLogging(options => options.AddConsole())
                 .ConfigureServices(services =>
                 {
@@ -38,7 +42,6 @@ namespace PingmanTools.AspNet.EncryptWeMust.Tests
                     services.AddLetsEncryptFileCertificatePersistence();
                     services.AddLetsEncryptFileChallengePersistence();
                 })
-                .Configure(appBuilder => { appBuilder.UseLetsEncrypt(); })
                 .Build();
 
             thing.Services.GetRequiredService<ILetsEncryptRenewalService>();

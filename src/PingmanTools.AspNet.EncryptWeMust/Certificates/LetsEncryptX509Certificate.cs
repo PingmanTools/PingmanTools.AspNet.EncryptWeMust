@@ -10,12 +10,16 @@ namespace PingmanTools.AspNet.EncryptWeMust.Certificates
         public LetsEncryptX509Certificate(X509Certificate2 certificate)
         {
             _certificate = certificate;
-            RawData = certificate.RawData;
+            RawData = certificate.Export(X509ContentType.Pfx, nameof(EncryptWeMust));
         }
 
         public LetsEncryptX509Certificate(byte[] data)
         {
+#if NET10_0_OR_GREATER
+            _certificate = X509CertificateLoader.LoadPkcs12(data, nameof(EncryptWeMust));
+#else
             _certificate = new X509Certificate2(data, nameof(EncryptWeMust));
+#endif
             RawData = data;
         }
 
